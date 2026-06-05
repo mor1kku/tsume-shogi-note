@@ -1,0 +1,11 @@
+node_modules
+dist
+dist-ssr
+*.local
+.DS_Store
+.vite
+
+# 自分の問題バックアップを誤って公開しないように
+tsume-backup-*.json
+tsume-rescue.json
+*backup*.json
