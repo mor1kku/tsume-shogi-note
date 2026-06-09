@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
+import { toKIF, parseKIF, looksLikeKIF } from "./kif.js";
 
 // 端末ローカル保存（localStorage）。将来 IndexedDB に差し替え可。
 const store = {
@@ -115,7 +116,7 @@ const toMs = (val, unit) => Math.max(200, (Number(val) || 0) * (unit === "min" ?
 
 const SAMPLE = [{
   id: "sample-1", title: "頭金（一手詰）", moves: 1,
-  summary: "離れた飛の横利きで5二を支え、金を打って詰ます基本の一手詰。初期局面は王手ではない。",
+  summary: "初歩の一手詰",
   createdAt: "2026-06-03",
   board: {
     "5-1": { type: "玉", side: "defender", promoted: false },
@@ -263,11 +264,13 @@ function ShareSheet({ problem, board, hands, onClose }) {
   const t = positionToText(board, hands);
   const textPayload = `${problem ? problem.title + "\n" : ""}攻め方：${t.attacker}${t.attHand !== "なし" ? "　持駒 " + t.attHand : ""}\n受け方：${t.defender}` + (problem?.answerMoves?.length ? "\n解答：" + problem.answerMoves.map((m, i) => `${i + 1}.${m.text}`).join(" ") : "");
   const dataPayload = problem ? JSON.stringify([problem], null, 2) : "";
+  const kifPayload = problem ? toKIF(problem) : "";
 
   useEffect(() => { if (tab === "image") { const cv = makeBoardCanvas(board, hands, title); cvRef.current = cv; setImgUrl(cv.toDataURL("image/png")); } }, [tab]);
 
   const shareImage = () => { const cv = cvRef.current; if (!cv) return; cv.toBlob(async (blob) => { const f = new File([blob], "tsume.png", { type: "image/png" }); const ok = await tryShareFiles([f], title, title); if (!ok) download(blob, "tsume.png"); }, "image/png"); };
   const shareData = async () => { const blob = new Blob([dataPayload], { type: "application/json" }); const f = new File([blob], "tsume-data.json", { type: "application/json" }); const ok = await tryShareFiles([f], title, title); if (!ok) download(blob, "tsume-data.json"); };
+  const shareKif = async () => { const blob = new Blob([kifPayload], { type: "text/plain" }); const f = new File([blob], "tsume.kif", { type: "text/plain" }); const ok = await tryShareFiles([f], title, title); if (!ok) download(blob, "tsume.kif"); };
 
   return (
     <div style={modalWrap} onClick={onClose}>
@@ -276,6 +279,7 @@ function ShareSheet({ problem, board, hands, onClose }) {
           <button style={tab === "image" ? btn(true) : ghost} onClick={() => setTab("image")}>画像</button>
           <button style={tab === "text" ? btn(true) : ghost} onClick={() => setTab("text")}>文字</button>
           {problem && <button style={tab === "data" ? btn(true) : ghost} onClick={() => setTab("data")}>データ</button>}
+          {problem && <button style={tab === "kif" ? btn(true) : ghost} onClick={() => setTab("kif")}>KIF</button>}
           <button style={{ ...ghost, marginLeft: "auto" }} onClick={onClose}>×</button>
         </div>
 
@@ -294,6 +298,12 @@ function ShareSheet({ problem, board, hands, onClose }) {
           <div style={{ fontSize: 12, color: C.inkSoft, marginBottom: 6 }}>このデータを相手に送り、相手は「読み込み」で取り込めます。</div>
           <textarea readOnly value={dataPayload} style={{ ...ta, height: 120 }} />
           <div style={{ display: "flex", gap: 8, marginTop: 8 }}><button style={btn(true)} onClick={shareData}>ファイルで送る</button><button style={ghost} onClick={() => copyText(dataPayload)}>コピー</button></div>
+        </div>}
+
+        {tab === "kif" && problem && <div>
+          <div style={{ fontSize: 12, color: C.inkSoft, marginBottom: 6 }}>KIF形式。将棋ソフト（ShogiGUI・Kifu for 等）に読み込めます。</div>
+          <textarea readOnly value={kifPayload} style={{ ...ta, height: 160 }} />
+          <div style={{ display: "flex", gap: 8, marginTop: 8 }}><button style={btn(true)} onClick={shareKif}>.kifで送る</button><button style={ghost} onClick={() => copyText(kifPayload)}>コピー</button></div>
         </div>}
 
         <div style={{ fontSize: 11, color: C.inkSoft, marginTop: 12 }}>※ホーム画面に追加したアプリでは LINE・メール・AirDrop などの共有メニューが開きます（このプレビューでは制限される場合があります）。</div>
@@ -421,7 +431,22 @@ function ListScreen({ problems, onPlay, onEdit, onDelete, onImport }) {
       </div>
       <div style={{ fontSize: 12, color: C.inkSoft, marginBottom: 8 }}>データはこの端末内に自動保存されます。「端末に保存」で全問題をバックアップ（.json）として書き出せます。</div>
       {io === "export" && <div style={ioBox}><div style={{ fontSize: 13, color: C.inkSoft, marginBottom: 6 }}>このJSONをコピーして保存・共有できます。</div><textarea readOnly value={JSON.stringify(problems, null, 2)} style={ta} /></div>}
-      {io === "import" && <div style={ioBox}><div style={{ fontSize: 13, color: C.inkSoft, marginBottom: 6 }}>受け取ったJSON（または共有データ）を貼り付けると、既存に追加で取り込みます。</div><textarea value={importText} onChange={(e) => setImportText(e.target.value)} style={ta} /><button style={{ ...btn(true), marginTop: 8 }} onClick={() => { try { const a = JSON.parse(importText); if (Array.isArray(a)) { onImport(a); setIo(null); setImportText(""); } else alert("配列のJSONを貼り付けてください"); } catch { alert("JSONの形式が正しくありません"); } }}>取り込む</button></div>}
+      {io === "import" && <div style={ioBox}><div style={{ fontSize: 13, color: C.inkSoft, marginBottom: 6 }}>JSON でも KIF でも貼り付けOK（自動判別）。既存に追加で取り込みます。</div><textarea value={importText} onChange={(e) => setImportText(e.target.value)} style={ta} placeholder='[{...}] か、KIF（後手の持駒：… 盤面図 …）' /><button style={{ ...btn(true), marginTop: 8 }} onClick={() => {
+        const t = importText.trim();
+        if (!t) { alert("内容が空です"); return; }
+        try {
+          if (looksLikeKIF(t)) {
+            const k = parseKIF(t);
+            if (Object.keys(k.board).length === 0) { alert("KIFの盤面を読み取れませんでした"); return; }
+            onImport([{ title: k.title || "KIF取り込み", moves: k.moves || k.answerMoves.length || 1, summary: "", createdAt: new Date().toISOString().slice(0, 10), board: k.board, hands: k.hands, answerMoves: k.answerMoves }]);
+          } else {
+            const a = JSON.parse(t);
+            if (!Array.isArray(a)) { alert("配列のJSONを貼り付けてください"); return; }
+            onImport(a);
+          }
+          setIo(null); setImportText("");
+        } catch (e) { alert("読み取れませんでした（JSON/KIFの形式を確認してください）"); }
+      }}>取り込む</button></div>}
 
       <div style={{ display: "grid", gap: 10, marginTop: 14 }}>
         {problems.map((p, idx) => {
@@ -438,11 +463,19 @@ function ListScreen({ problems, onPlay, onEdit, onDelete, onImport }) {
                 <div>攻め方：{t.attacker}{t.attHand !== "なし" && `　持駒 ${t.attHand}`}</div>
                 <div>受け方：{t.defender}</div>
               </div>
+              <details style={{ marginTop: 6 }}>
+                <summary style={{ cursor: "pointer", fontSize: 13, color: C.vermilion }}>答え（手順）を見る</summary>
+                <div style={{ fontSize: 14, lineHeight: 1.9, marginTop: 4 }}>
+                  {(p.answerMoves && p.answerMoves.length)
+                    ? p.answerMoves.map((m, i) => <span key={i} style={{ marginRight: 8 }}>{i + 1}.{m.text}</span>)
+                    : <span style={{ color: C.inkSoft }}>解答は未登録です</span>}
+                </div>
+              </details>
               <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
                 <button style={btn(true)} onClick={() => onPlay(idx, true)}>解く</button>
                 <button style={btn(false)} onClick={() => onPlay(idx, false)}>見る</button>
-                <button style={ghost} onClick={() => setShareTarget(p)}>共有</button>
                 <button style={ghost} onClick={() => onEdit(p.id)}>編集</button>
+                <button style={ghost} onClick={() => setShareTarget(p)}>共有</button>
                 <button style={{ ...ghost, marginLeft: "auto", color: C.vermilion }} onClick={() => { if (confirm("削除しますか？")) onDelete(p.id); }}>削除</button>
               </div>
             </div>
@@ -474,6 +507,8 @@ function EditScreen({ initial, onCancel, onSave }) {
   const [fAtt, setFAtt] = useState("");
   const [fDef, setFDef] = useState("");
   const [fHand, setFHand] = useState("");
+  const [inFmt, setInFmt] = useState("list"); // list | kif
+  const [fKif, setFKif] = useState("");
 
   const [recording, setRecording] = useState(false);
   const [sel, setSel] = useState(null);
@@ -490,6 +525,7 @@ function EditScreen({ initial, onCancel, onSave }) {
     setFAtt(t.attacker === "なし" ? "" : t.attacker.replace(/　/g, " "));
     setFDef(t.defender === "なし" ? "" : t.defender.replace(/　/g, " "));
     setFHand(t.attHand === "なし" ? "" : t.attHand.replace(/　/g, " "));
+    setFKif(toKIF({ title, moves, board, hands, answerMoves: answer }));
     setTab("text");
   };
   const applyText = () => {
@@ -497,6 +533,15 @@ function EditScreen({ initial, onCancel, onSave }) {
     if (Object.keys(b).length === 0) { alert("駒が読み取れませんでした。例：受け方欄に「5一玉 4二歩」"); return; }
     const hh = emptyHands(); hh.attacker = parseHand(fHand);
     setBoard(b); setHands(hh); setTab("board");
+  };
+  const applyKif = () => {
+    const k = parseKIF(fKif);
+    if (Object.keys(k.board).length === 0) { alert("KIFの盤面を読み取れませんでした"); return; }
+    setBoard(k.board); setHands(k.hands);
+    if (k.answerMoves && k.answerMoves.length) setAnswer(k.answerMoves);
+    if (k.title) setTitle((t) => t || k.title);
+    if (k.moves) setMoves((m) => m || String(k.moves));
+    setTab("board");
   };
 
   const onCell = (c, r) => {
@@ -546,11 +591,25 @@ function EditScreen({ initial, onCancel, onSave }) {
 
       {tab === "text" && (
         <div style={{ marginBottom: 16, display: "grid", gap: 10 }}>
-          <div style={{ fontSize: 13, color: C.inkSoft }}>各欄に局面の文字だけ入力（例「5一玉 4二歩」）。区切りは空白でも読点でもOK。</div>
-          <label style={lbl}>攻め方<input value={fAtt} onChange={(e) => setFAtt(e.target.value)} style={inp} placeholder="5九飛 …" /></label>
-          <label style={lbl}>受け方<input value={fDef} onChange={(e) => setFDef(e.target.value)} style={inp} placeholder="5一玉 4二歩 6二歩 …" /></label>
-          <label style={lbl}>攻め方 持ち駒<input value={fHand} onChange={(e) => setFHand(e.target.value)} style={inp} placeholder="金 銀二 …" /></label>
-          <button style={btn(true)} onClick={applyText}>盤に反映</button>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button style={inFmt === "list" ? btn(true) : ghost} onClick={() => setInFmt("list")}>配置リスト</button>
+            <button style={inFmt === "kif" ? btn(true) : ghost} onClick={() => setInFmt("kif")}>KIF</button>
+          </div>
+          {inFmt === "list" ? (
+            <>
+              <div style={{ fontSize: 13, color: C.inkSoft }}>各欄に局面の文字だけ入力（例「5一玉 4二歩」）。区切りは空白でも読点でもOK。</div>
+              <label style={lbl}>攻め方<input value={fAtt} onChange={(e) => setFAtt(e.target.value)} style={inp} placeholder="5九飛 …" /></label>
+              <label style={lbl}>受け方<input value={fDef} onChange={(e) => setFDef(e.target.value)} style={inp} placeholder="5一玉 4二歩 6二歩 …" /></label>
+              <label style={lbl}>攻め方 持ち駒<input value={fHand} onChange={(e) => setFHand(e.target.value)} style={inp} placeholder="金 銀二 …" /></label>
+              <button style={btn(true)} onClick={applyText}>盤に反映</button>
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize: 13, color: C.inkSoft }}>KIF（盤面図＋指し手）を貼り付け／編集できます。他ソフトとやり取り可能。</div>
+              <textarea value={fKif} onChange={(e) => setFKif(e.target.value)} style={{ ...ta, height: 230 }} placeholder={"後手の持駒：…\n  ９ ８ ７ …\n+--…--+\n| … |一\n…"} />
+              <button style={btn(true)} onClick={applyKif}>KIFを盤に反映</button>
+            </>
+          )}
         </div>
       )}
 
@@ -636,6 +695,7 @@ function PlayScreen({ problems, idx, setIdx, solve, onBack }) {
   const [tunit, setTunit] = useState("sec");
   const timer = useRef(null);
   const [share, setShare] = useState(false);
+  const [txtFmt, setTxtFmt] = useState("list"); // list | kif
 
   const states = useMemo(() => buildStates(p.board, p.hands || emptyHands(), p.answerMoves || []), [p]);
   const maxStep = states.length - 1;
@@ -686,9 +746,21 @@ function PlayScreen({ problems, idx, setIdx, solve, onBack }) {
         </div>
       ) : (
         <div style={{ ...card, fontSize: 17, lineHeight: 2 }}>
-          <div style={{ fontSize: 12, color: C.inkSoft, marginBottom: 8 }}>脳内盤（文字表示）</div>
-          <div>攻め方：{initText.attacker}{initText.attHand !== "なし" && `　持駒 ${initText.attHand}`}</div>
-          <div>受け方：{initText.defender}</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+            <span style={{ fontSize: 12, color: C.inkSoft }}>脳内盤（文字表示）</span>
+            <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+              <button style={{ ...(txtFmt === "list" ? btn(true) : ghost), padding: "4px 10px", fontSize: 13 }} onClick={() => setTxtFmt("list")}>配置</button>
+              <button style={{ ...(txtFmt === "kif" ? btn(true) : ghost), padding: "4px 10px", fontSize: 13 }} onClick={() => setTxtFmt("kif")}>KIF盤面</button>
+            </div>
+          </div>
+          {txtFmt === "list" ? (
+            <>
+              <div>攻め方：{initText.attacker}{initText.attHand !== "なし" && `　持駒 ${initText.attHand}`}</div>
+              <div>受け方：{initText.defender}</div>
+            </>
+          ) : (
+            <pre style={{ fontFamily: "monospace", fontSize: 13, lineHeight: 1.5, whiteSpace: "pre", overflowX: "auto", margin: 0 }}>{toKIF({ board: revealed ? cur.board : p.board, hands: revealed ? cur.hands : (p.hands || emptyHands()) })}</pre>
+          )}
           {revealed && <>
             <div style={{ borderTop: `1px dashed ${C.line}`, margin: "12px 0" }} />
             <div style={{ fontSize: 12, color: C.inkSoft, marginBottom: 6 }}>手順</div>
@@ -731,11 +803,131 @@ function PlayScreen({ problems, idx, setIdx, solve, onBack }) {
 }
 
 // ---- Quiz (問題モード / スライドショー) ----
+// ---- 盤面で解く（なぞり式：記録手順と一致判定）----
+function BoardSolver({ problem, index, total, onPrev, onNext, onExit }) {
+  const moves = problem.answerMoves || [];
+  const states = useMemo(() => buildStates(problem.board, problem.hands || emptyHands(), moves), [problem]);
+  const vw = useViewportWidth();
+  const bsize = boardSizeFor(vw, 330);
+  const [ply, setPly] = useState(0);
+  const [sel, setSel] = useState(null);
+  const [promo, setPromo] = useState(null);
+  const [msg, setMsg] = useState("");
+  const [hint, setHint] = useState(false);
+  const [gaveUp, setGaveUp] = useState(false);
+
+  useEffect(() => { setPly(0); setSel(null); setPromo(null); setMsg(""); setHint(false); setGaveUp(false); }, [problem]);
+
+  const solved = moves.length > 0 && ply >= moves.length;
+  const cur = states[Math.min(ply, states.length - 1)];
+  const recMove = moves[ply];
+  const lastTo = ply > 0 ? moves[ply - 1]?.to : null;
+
+  const tryUserMove = (um) => {
+    const rec = moves[ply];
+    if (!rec) return;
+    const ok = rec.drop === um.drop && rec.to === um.to &&
+      (rec.drop ? rec.type === um.type : (rec.from === um.from && !!rec.promote === !!um.promote));
+    if (ok) {
+      let np = ply + 1;
+      if (moves[np] && moves[np].side === "defender") np += 1; // 受け方の手を自動
+      setPly(np); setSel(null); setHint(false);
+      setMsg(np >= moves.length ? "正解！詰みです 🎉" : "正解！　次の手を指してください");
+    } else {
+      setSel(null);
+      setMsg("その手は正解手順と違います。もう一度どうぞ。");
+    }
+  };
+
+  const onCell = (c, r) => {
+    if (solved || gaveUp || !recMove) return;
+    const key = sq(c, r);
+    const board = cur.board;
+    if (sel?.kind === "hand") { if (!board[key]) tryUserMove({ drop: true, from: null, to: key, type: sel.piece, promote: false }); setSel(null); return; }
+    if (sel?.kind === "board") {
+      if (sel.key === key) { setSel(null); return; }
+      const pc = board[sel.key];
+      const canP = PROMOTABLE.includes(pc.type) && !pc.promoted && (inPromoZone("attacker", r) || inPromoZone("attacker", Number(sel.key.split("-")[1])));
+      if (canP) { setPromo({ from: sel.key, to: key }); setSel(null); }
+      else { tryUserMove({ drop: false, from: sel.key, to: key, type: pc.type, promote: false }); setSel(null); }
+      return;
+    }
+    const pc = board[key];
+    if (pc && pc.side === "attacker") { setSel({ kind: "board", key }); setMsg(""); }
+  };
+
+  const showHint = () => {
+    if (!recMove) return;
+    setHint(true);
+    if (recMove.drop) setMsg(`ヒント：持ち駒の「${recMove.type}」を打ちます`);
+    else { const [c, r] = recMove.from.split("-").map(Number); setMsg(`ヒント：${c}${KAN[r]} の駒を動かします`); }
+  };
+  const giveUp = () => { setGaveUp(true); setPly(moves.length); setSel(null); setMsg("解答を表示しました"); };
+  const reset = () => { setPly(0); setSel(null); setMsg(""); setHint(false); setGaveUp(false); };
+
+  const hintFrom = hint && recMove && !recMove.drop ? recMove.from : null;
+  const noAnswer = moves.length === 0;
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+        <button style={ghost} onClick={onExit}>← 設定</button>
+        <span style={{ marginLeft: "auto", fontSize: 13, color: C.inkSoft }}>{index + 1} / {total}・{problem.moves}手詰</span>
+      </div>
+      <div style={{ textAlign: "center", fontSize: 16, fontWeight: 600 }}>{problem.title}</div>
+      <div style={{ textAlign: "center", fontSize: 13, color: C.inkSoft, marginBottom: 8 }}>攻め方（先手）を動かして詰ましてください</div>
+
+      <div style={{ display: "flex", justifyContent: "center" }}>
+        <div>
+          <HandView label="受け方 持駒" hand={cur.hands.defender} />
+          <Board board={cur.board} onCellClick={onCell} selected={sel?.kind === "board" ? sel.key : hintFrom} lastTo={lastTo} size={bsize} />
+          <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", margin: "6px 0" }}>
+            <span style={{ width: 70, fontSize: 13, color: C.inkSoft }}>攻め方 持駒</span>
+            {HAND_ORDER.filter((k) => cur.hands.attacker[k] > 0).map((k) => (
+              <button key={k} onClick={() => { if (!solved && !gaveUp && cur.hands.attacker[k] > 0) { setSel({ kind: "hand", piece: k }); setMsg(""); } }} style={{ ...ghost, padding: "3px 8px", fontSize: 16, borderColor: sel?.kind === "hand" && sel.piece === k ? C.vermilion : C.line }}>{k}{cur.hands.attacker[k] > 1 ? cur.hands.attacker[k] : ""}</button>
+            ))}
+            {HAND_ORDER.every((k) => cur.hands.attacker[k] === 0) && <span style={{ color: C.inkSoft, fontSize: 13 }}>なし</span>}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ textAlign: "center", minHeight: 24, margin: "8px 0", fontSize: 15, color: solved ? "#2e7d32" : C.vermilion }}>
+        {noAnswer ? "この問題は解答が未登録です（編集で記録できます）" : (msg || (ply === 0 ? "初手を指してください" : `${ply}手目まで正解`))}
+      </div>
+
+      {(solved || gaveUp) && (
+        <div style={{ ...card, marginBottom: 10 }}>
+          <div style={{ fontSize: 12, color: C.inkSoft, marginBottom: 4 }}>手順</div>
+          <div style={{ fontSize: 16, lineHeight: 1.9 }}>{moves.map((m, i) => <span key={i} style={{ marginRight: 8 }}>{i + 1}.{m.text}</span>)}</div>
+        </div>
+      )}
+
+      <div style={{ display: "flex", justifyContent: "center", gap: 8, flexWrap: "wrap" }}>
+        <button style={ghost} onClick={showHint} disabled={solved || gaveUp || noAnswer}>ヒント</button>
+        <button style={ghost} onClick={giveUp} disabled={solved || gaveUp || noAnswer}>答えを見る</button>
+        <button style={ghost} onClick={reset} disabled={ply === 0 && !gaveUp}>やり直し</button>
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 16, borderTop: `1px solid ${C.line}`, paddingTop: 14 }}>
+        <button style={ghost} onClick={onPrev} disabled={index === 0}>← 前の問題</button>
+        <button style={btn(true)} onClick={onNext} disabled={index === total - 1}>次の問題 →</button>
+      </div>
+
+      {promo && <div style={modalWrap}><div style={modalCard}>
+        <div style={{ marginBottom: 12 }}>成りますか？</div>
+        <button style={btn(true)} onClick={() => { const pc = cur.board[promo.from]; tryUserMove({ drop: false, from: promo.from, to: promo.to, type: pc.type, promote: true }); setPromo(null); }}>成る</button>
+        <button style={{ ...ghost, marginLeft: 8 }} onClick={() => { const pc = cur.board[promo.from]; tryUserMove({ drop: false, from: promo.from, to: promo.to, type: pc.type, promote: false }); setPromo(null); }}>不成</button>
+      </div></div>}
+    </div>
+  );
+}
+
 function QuizScreen({ problems, onExit }) {
   const movesOptions = useMemo(() => Array.from(new Set(problems.map((p) => p.moves).filter(Boolean))).sort((a, b) => a - b), [problems]);
   const [movesSel, setMovesSel] = useState("all");
   const [count, setCount] = useState(Math.min(10, problems.length || 1));
   const [display, setDisplay] = useState("board");
+  const [mode, setMode] = useState("slideshow"); // slideshow | solve
   const [random, setRandom] = useState(true);
   const [tval, setTval] = useState(10);
   const [tunit, setTunit] = useState("sec");
@@ -754,7 +946,7 @@ function QuizScreen({ problems, onExit }) {
     if (random) pool = [...pool].sort(() => Math.random() - 0.5);
     pool = pool.slice(0, Math.max(1, Number(count) || 1));
     if (pool.length === 0) { alert("条件に合う問題がありません"); return; }
-    setList(pool); setQ(0); setPeek(false); setAuto(true); setRunning(true);
+    setList(pool); setQ(0); setPeek(false); setAuto(mode === "slideshow"); setRunning(true);
   };
 
   useEffect(() => {
@@ -766,8 +958,14 @@ function QuizScreen({ problems, onExit }) {
   if (!running) {
     return (
       <div>
-        <h2 style={{ fontSize: 16 }}>問題モード（スライドショー）</h2>
+        <h2 style={{ fontSize: 16 }}>問題モード</h2>
         <div style={{ ...card, display: "grid", gap: 12, maxWidth: 420 }}>
+          <div style={lbl}>形式
+            <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+              <button style={mode === "slideshow" ? btn(true) : ghost} onClick={() => setMode("slideshow")}>スライドショー</button>
+              <button style={mode === "solve" ? btn(true) : ghost} onClick={() => setMode("solve")}>盤面で解く</button>
+            </div>
+          </div>
           <label style={lbl}>手数
             <select value={movesSel} onChange={(e) => setMovesSel(e.target.value)} style={inp}>
               <option value="all">すべて</option>
@@ -775,21 +973,38 @@ function QuizScreen({ problems, onExit }) {
             </select>
           </label>
           <label style={lbl}>問題数<input type="number" min={1} value={count} onChange={(e) => setCount(e.target.value)} style={inp} /></label>
-          <label style={lbl}>表示
-            <select value={display} onChange={(e) => setDisplay(e.target.value)} style={inp}>
-              <option value="board">盤面</option>
-              <option value="text">脳内盤（文字）</option>
-            </select>
-          </label>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 13, color: C.inkSoft }}>次に進む間隔</span>
-            <input type="number" min={1} value={tval} onChange={(e) => setTval(e.target.value)} style={{ ...inp, width: 70 }} />
-            <select value={tunit} onChange={(e) => setTunit(e.target.value)} style={inp}><option value="sec">秒</option><option value="min">分</option></select>
-          </div>
+          {mode === "slideshow" && <>
+            <label style={lbl}>表示
+              <select value={display} onChange={(e) => setDisplay(e.target.value)} style={inp}>
+                <option value="board">盤面</option>
+                <option value="text">脳内盤（配置の文字）</option>
+                <option value="kif">脳内盤（KIF盤面図）</option>
+              </select>
+            </label>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 13, color: C.inkSoft }}>次に進む間隔</span>
+              <input type="number" min={1} value={tval} onChange={(e) => setTval(e.target.value)} style={{ ...inp, width: 70 }} />
+              <select value={tunit} onChange={(e) => setTunit(e.target.value)} style={inp}><option value="sec">秒</option><option value="min">分</option></select>
+            </div>
+          </>}
+          {mode === "solve" && <div style={{ fontSize: 12, color: C.inkSoft }}>盤面で攻め方を動かして詰ますモードです（なぞり式：登録した正解手順と一致で進みます）。</div>}
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14 }}><input type="checkbox" checked={random} onChange={(e) => setRandom(e.target.checked)} /> ランダム順</label>
           <div style={{ display: "flex", gap: 8 }}><button style={btn(true)} onClick={start}>開始</button><button style={ghost} onClick={onExit}>戻る</button></div>
         </div>
       </div>
+    );
+  }
+
+  if (mode === "solve") {
+    return (
+      <BoardSolver
+        problem={list[q]}
+        index={q}
+        total={list.length}
+        onPrev={() => setQ((i) => Math.max(0, i - 1))}
+        onNext={() => setQ((i) => Math.min(list.length - 1, i + 1))}
+        onExit={() => setRunning(false)}
+      />
     );
   }
 
@@ -806,6 +1021,10 @@ function QuizScreen({ problems, onExit }) {
       {display === "board" ? (
         <div style={{ display: "flex", justifyContent: "center" }}>
           <div><HandView label="受け方 持駒" hand={(p.hands || emptyHands()).defender} /><Board board={p.board} size={bsize} /><HandView label="攻め方 持駒" hand={(p.hands || emptyHands()).attacker} /></div>
+        </div>
+      ) : display === "kif" ? (
+        <div style={{ ...card }}>
+          <pre style={{ fontFamily: "monospace", fontSize: 13, lineHeight: 1.5, whiteSpace: "pre", overflowX: "auto", margin: 0 }}>{toKIF({ board: p.board, hands: p.hands || emptyHands() })}</pre>
         </div>
       ) : (
         <div style={{ ...card, fontSize: 18, lineHeight: 2 }}>
